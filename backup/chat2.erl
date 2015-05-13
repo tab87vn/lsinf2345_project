@@ -1,7 +1,7 @@
 
 
--module (chat).
 -export ([send_msg/2,start_server/0, server_run/1, client_run/2, disconnect/0, connect/2]).
+-module (chat).
 
 
 %%% CLIENT SIDE %%% 
