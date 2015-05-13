@@ -1,8 +1,10 @@
+%% ALL THE MESSAGE DISPLAY SHOULD BE DONE ON APPLICATION LAYER
+
 -module (client).
 -export ([  disconnect/0,connect/1, 
             start_client/2, client_handler/3,
             message_broadcast/1, message_send/2, 
-            group_list/0, group_create/1, group_leave/1, group_join/1]).
+            group_list/0, group_create/2, group_leave/1, group_join/1]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% APPLICATION LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -40,10 +42,11 @@ message_send(Username, Msg) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% CHAT ROOM %%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Group infor should also be stored on server/private
-group_create(GroupName) ->
+group_create(Name, Description) ->
     % {GroupName, User_list}
-    % % Group_list = [{GroupName, StarterPID GroupUser_list}]
-    pass.
+    % % Group_list = [{GroupName, StarterPID, GroupUser_list}]
+    client_pid ! {group_create_req, Name, Description}.
+    
 
 group_list() ->
     client_pid ! group_list_req.
@@ -85,7 +88,7 @@ start_client(Username, ServerNode) ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% APPLICATION LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% CONTROLLER LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % a loop process that handles requests from client
@@ -105,19 +108,23 @@ client_handler(Username, User_list, Group_list) ->
             client_handler(Username, User_list, Group_list);
 
         % broadcast receive from server for updated user list
-        {bc_receive, Updated_user_list} ->
+        {bc_receive, BroadcastMsg} ->
             % should remove self PID/User name from the list
-            lists:keydelete(Username, 2, Updated_user_list),
-            io:format("Other online users (updated): ~p~n", [Updated_user_list]),
-            client_handler(Username, Updated_user_list, Group_list);
+            case BroadcastMsg of
+                {updated_user_list, UpdatedUserList} ->
+                    lists:keydelete(Username, 2, UpdatedUserList),
+                    io:format("Current online user(s): ~p~n", [UpdatedUserList]),
+                    client_handler(Username, UpdatedUserList, Group_list);
+                {updated_group_list, UpdatedGroupList} ->
+                    io:format("Available group chat: ~p~n", [UpdatedGroupList]),
+                    client_handler(Username, User_list, UpdatedGroupList);
+                _ ->
+                    unknown_broadcast_message
+            end;
 
         % broadcast received from other users
         {bc_receive, Message, Sender} ->
             io:format("Broadcast message from ~w: ~p~n", [Sender, Message]),
-            client_handler(Username, User_list, Group_list);
-
-        {bc_hello, Pid, Node, Username} -> % receives a hello from other client
-            [{Pid, Node, Username} | User_list],
             client_handler(Username, User_list, Group_list);
 
         {msg_send, RecipientUsn, Msg} ->
@@ -127,11 +134,11 @@ client_handler(Username, User_list, Group_list) ->
             %io:format("everything is alright!~n"),
 
             case lists:keysearch(RecipientUsn, 2, User_list) of
-                    false -> % nothing found
-                        recipient_username_not_found;
-                    {value, {RcptPid, RcptUsn}} -> % tuple returned
-                        %io:format("Send message ~w to user ~w with pid ~w~n", [Msg, RcptUsn, RcptPid]),
-                        RcptPid ! {msg_receive, RcptUsn, Msg, Username, self()}
+                false -> % nothing found
+                    recipient_username_not_found;
+                {value, {RcptPid, RcptUsn}} -> % tuple returned
+                    %io:format("Send message ~w to user ~w with pid ~w~n", [Msg, RcptUsn, RcptPid]),
+                    RcptPid ! {msg_receive, RcptUsn, Msg, Username, self()}
             end,
             client_handler(Username, User_list, Group_list);
 
@@ -148,13 +155,25 @@ client_handler(Username, User_list, Group_list) ->
             %log system works here to record into Riak later
             client_handler(Username, User_list, Group_list);
 
+        % TODO: seperate from application layer
         client_connect ->
             pass;
 
         client_disconnect ->
-            {chat_server, server_node()} ! {whereis(Username), client_disconnected},
-            unregister(Username);
+            {chat_server, server_node()} ! {self(), client_disconnected},
+            unregister(client_pid);
 
+        %%%%%%%%%%% GROUP %%%%%%%%%%%%%
+        % request to create group (group name, description)
+        {group_create_req, GroupName, GroupDescription} ->
+            {group_server, server_node()} ! {group_create_req, GroupName, GroupDescription, Username, self()},
+            client_handler(Username, User_list, Group_list);
+
+        {group_create_res, GroupName, UpdatedGroupList} ->
+            % print out the name
+            io:format("Group ~p has been created!~n", [GroupName]),
+            io:format("Available chat groups: ~p~n", [UpdatedGroupList]),
+            client_handler(Username, User_list, UpdatedGroupList);
 
         group_list_req ->
             io:format("List all avaiable groups on server!"),
@@ -164,8 +183,10 @@ client_handler(Username, User_list, Group_list) ->
 broadcast(Msg, User_list, Sender) ->
     [Pid ! {bc_receive, Msg, Sender} || {Pid, Username} <- User_list].
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ROUTER LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%%%% ROUTER LAYER %%%%%%%%%
 %%% Involve logical dispatching
 client_router_layer() ->
     receive
@@ -178,8 +199,10 @@ client_router_layer() ->
             client_link_layer()
     end.
 
-%%% LINK LAYER OF CLIENT
-%%% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% TRANSMIT LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 client_link_layer() ->
     receive
         % Message = {Pid, Message}, Message = {Username, Node, etc}
