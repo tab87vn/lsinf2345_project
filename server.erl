@@ -44,7 +44,7 @@ group_handler(GroupList) ->
         {group_create_req, GroupName, GroupDescription, Username, Pid} ->
             % add new group to the list of group
             io:format("Request to create group ~p from ~w~n", [GroupName, Username]),
-            MemberList = [Username],
+            MemberList = [{Pid, Username}],
             % may perform name check here
             UpdatedGroupList = [{GroupName, GroupDescription, Username, MemberList} | GroupList],            
             io:format("Available groups: ~p~n", [UpdatedGroupList]),
@@ -57,18 +57,39 @@ group_handler(GroupList) ->
             group_handler(UpdatedGroupList);
 
         % list all available group conversation
-        {group_list_req, Username, Pid} ->
+        {group_list_req, Pid} ->
             Pid ! {group_list_res, GroupList},
             group_handler(GroupList);
 
 
-        {group_join_req, Username} ->
-            pass,
-            group_handler(GroupList);
+        {group_join_req, GroupName, Username, Pid} ->
+            io:format("requested~n"),
+            case lists:keysearch(GroupName, 1, GroupList) of
+                false ->
+                    no_such_group,
+                    group_handler(GroupList);
+                {value, {Name, Desc, Starter, MemberList}} ->
+                    UpdatedMemberList = [{Pid, Username} | MemberList],
+                    UpdatedGroup = {GroupName, Desc, Starter, UpdatedMemberList},
+                    UpdatedGroupList = lists:keyreplace(Name, 1, GroupList, UpdatedGroup),
+                    Pid ! {group_join_res, UpdatedGroupList, UpdatedMemberList},
+                    group_handler(UpdatedGroupList)
 
-        {group_leave_req, Username} ->
-            pass,
-            group_handler(GroupList)
+            end;
+
+        {group_leave_req, GroupName, Username, Pid} ->
+            case lists:keysearch(GroupName, 1, GroupList) of
+                false ->
+                    no_such_group,
+                    group_handler(GroupList);
+                {value, {Name, Desc, Starter, MemberList}} ->
+                    UpdatedMemberList = lists:delete({Pid, Username}, MemberList),
+                    UpdatedGroup = {GroupName, Desc, Starter, UpdatedMemberList},
+                    UpdatedGroupList = lists:keyreplace(Name, 1, GroupList, UpdatedGroup),
+                    Pid ! {group_leave_res, UpdatedGroupList, UpdatedMemberList, Username},
+                    group_handler(UpdatedGroupList)
+
+            end            
     end.
         
 
