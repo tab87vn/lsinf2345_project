@@ -1,48 +1,17 @@
 -module (chat).
 -export ([	disconnect/1, server_run/1, start_server/0,connect/1, 
-			start_client/2, message_send/2, message_send_all/2, broadcast/2, client_handler/3,
-			message_broadcast/1,
-			group_list/0, group_create/1, group_leave/1, group_join/1]).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% APPLICATION LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+			start_client/2, send_message/2, send_message_all/2, broadcast/2, client_handler/3]).
 
 connect(Username) ->
 	% spawn a client process to handle request send to a client once connected
 	% global:register_name(client_pid, spawn(chat, start_client, [Username, server_node()])).
-	case whereis(client_pid) of 
-        undefined ->
-            register(client_pid, spawn(chat, start_client, [Username, server_node()]));
-        _ -> already_logged_on
-    end.
+	register(Username, spawn(chat, start_client, [Username, server_node()])).
 
 %disconnect last connected user
 disconnect(Username) ->
 	% client_pid ! {disconnect, self(), server_node()}.	
 	{chat_server, server_node()} ! {whereis(Username), client_disconnected},
 	unregister(Username).
-
-
-message_broadcast(Msg) ->
-	client_pid ! {msg_broadcast, Msg}.
-
-
-message_send(Username, Msg) ->
-	client_pid ! {msg_sent, Username, Msg}.
-
- 
-message_send_all(User_list, Msg) ->
-	pass.
-
-
-% UTILITY FUNCTIONS
-% broadcast a message to a list of user
-broadcast(Msg, User_list) ->
-	[Pid ! {broadcast_msg_receive, Msg} || {Pid, Username} <- User_list].
-
-broadcast(Msg, User_list, Sender) ->
-	[Pid ! {broadcast_msg_receive, Msg, Sender} || {Pid, Username} <- User_list].
 
 % broadcast(Username, Pid) ->
 % 	%self() ! {broadcast, Username, node(), global:whereis_name(client_pid)}.
@@ -54,17 +23,12 @@ broadcast(Msg, User_list, Sender) ->
 		% broadcast(Other_users)
 	% if User -> it's just a user, send 1
 
+
 start_client(Username, ServerNode) ->
 	io:format("Hello ~p~n", [Username]),
 	{chat_server, ServerNode} ! {self(), connect, Username},
 	%broadcast(Username),
 	client_handler(Username, [], []).
-
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% APPLICATION LAYER %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % a loop process that handles requests from client
 % Group_list = [{GroupName, StarterPID GroupUser_list}]
@@ -82,17 +46,9 @@ client_handler(Username, User_list, Group_list) ->
 			[{Pid, Node} ! {bc_hello, _Pid, _Node, _Username} || {Pid, Node, Username} <- User_list],				
 			client_handler(Username, User_list, Group_list);
 
-		% broadcast receive from server for updated user list
-		{broadcast_msg_receive, Updated_user_list} ->
-			% should remove self PID/User name from the list
-			lists:keydelete(Username, 2, Updated_user_list),
-			io:format("Other online users (updated): ~p~n", [Updated_user_list]),
+		{broadcast_msg, Updated_user_list} ->
+			io:format("user list updated: ~p~n", [Updated_user_list]),
 			client_handler(Username, Updated_user_list, Group_list);
-
-		% broadcast received from other users
-		{broadcast_msg_receive, Message, Sender} ->
-			io:format("Broadcast message from ~w: ~p~n", [Sender, Message]),
-			client_handler(Username, User_list, Group_list);
 
 		{bc_hello, Pid, Node, Username} -> % receives a hello from other client
 			[{Pid, Node, Username} | User_list],
@@ -102,37 +58,40 @@ client_handler(Username, User_list, Group_list) ->
 			% should be handled by lower layer
 			% User_list format: [{Username, Pid, Node}]
 			% search for the username in the tuple list
-			%io:format("everything is alright!~n"),
-
 			case lists:keysearch(RecipientUsn, 2, User_list) of
 					false -> % nothing found
 						recipient_username_not_found;
 					{value, {RcptPid, RcptUsn}} -> % tuple returned
-						%io:format("Send message ~w to user ~w with pid ~w~n", [Msg, RcptUsn, RcptPid]),
 						RcptPid ! {msg_received, RcptUsn, Msg, Username, self()}
-			end,
-			client_handler(Username, User_list, Group_list);
-
-		{msg_broadcast, Msg} ->
-			io:format("broadcast requested~n"),
-			broadcast(Msg, User_list, Username), % WHY ONLY 1 TIME?
-			client_handler(Username, User_list, Group_list);
-
-
-
-		{msg_received, _RecipientUsn, Msg, SenderUsn, SenderPid} ->
+			end;
+		{msg_received, RecipientUsn, Msg, SenderUsn, SenderPid} ->
 			% when receiving a message sent by another
-			io:format("~w: ~p~n", [SenderUsn, Msg]),
+			io:format("~p: ~p", [SenderUsn, Msg]);
 			%log system works here to record into Riak later
-			client_handler(Username, User_list, Group_list);
 
-		group_list_req ->
-			io:format("List all avaiable groups on server!"),
-			client_handler(Username, User_list, Group_list)
+		{online_user_updated, Updated_user_list} ->
+			% maybe more work on this to remove self()
+			User_list = Updated_user_list,
+			client_handler(Username, Updated_user_list, Group_list)
+
+		% {disconnect, Pid, ServerNode} ->
+		% 	{chat_server, ServerNode} ! {Pid, client_disconnected}
 	end.
 
+% broadcast a message to a list of user
+broadcast(Msg, User_list) ->
+	[Pid ! {broadcast_msg, Msg} || {Pid, Username} <- User_list].
 
 
+% send_message(Username, Msg) -> % send a message to another user
+% 	client_pid ! {msg_sent, Username, Msg}.
+
+send_message(Username, Msg) ->
+	whereis(Username) ! {msg_sent, Msg}.
+
+ 
+send_message_all(User_list, Msg) ->
+	pass.
 
 %%%% ROUTER LAYER %%%%%%%%%
 %%% Involve logical dispatching
@@ -159,11 +118,6 @@ client_link_layer() ->
 			sent,
 			client_link_layer()
 	end.
-
-
-
-
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%% SERVER SIDE %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -214,23 +168,18 @@ server_logoff(From, User_List) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% CHAT ROOM %%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Group infor should also be stored on server/private
-group_create(GroupName) ->
+create_group(GroupName) ->
 	% {GroupName, User_list}
 	% % Group_list = [{GroupName, StarterPID GroupUser_list}]
 	pass.
 
-group_list() ->
-	client_pid ! group_list_req.
-
-group_join(GroupName) ->
+list_group(ServerNode) ->
 	pass.
 
-group_leave(GroupName) ->
+join_group(GroupName) ->
 	pass.
 
-group_broadcast(GroupName, Message) ->
-	%broadcast msg to all ppl in 1 group
-	% user can only broadcast to groups that he's joined
+leave_group(GroupName) ->
 	pass.
 	
 
