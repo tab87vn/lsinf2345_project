@@ -92,8 +92,6 @@ group_handler(GroupList) ->
             end            
     end.
         
-
-
 server_logon(SenderPid, Username, User_list) ->
     %% check if logged on anywhere else
     case lists:keymember(Username, 2, User_list) of
